@@ -1,0 +1,132 @@
+<?php
+/**
+ * @file
+ * Migrate links in Node Picker format.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function nodepicket_migrate_menu() {
+  $items = array();
+
+  $items['admin/settings/nodepicker-migrate'] = array(
+    'title' => 'Node Picker Migrate',
+    'description' => 'Migrate links from Node Picket format.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('nodepicker_migrate_form'),
+    'access arguments' => array('administer site settings'),
+  );
+
+  return $items;
+}
+
+/**
+ * Migration form.
+ */
+function nodepicker_migrate_form() {
+  // Get node types.
+  $types = node_get_types();
+  $options = array();
+  foreach ($types as $type) {
+    $options[$type->type] = $type->name;
+  }
+
+  $form['types'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Node types'),
+    '#description' => t('Select the nodes types you want to migrate.'),
+    '#options' => $options,
+    '#required' => TRUE,
+  );
+
+  $form['format'] = array(
+    '#type' => 'select',
+    '#title' => t('Format'),
+    '#description' => t("Choose the format you wan't to migrate to."),
+    '#options' => array(
+      'pathologic' => t('Pathologic'),
+      'static' => t('Static links'),
+    ),
+    '#required' => TRUE,
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Migrate'),
+  );
+
+  return $form;
+}
+
+/**
+ * Submit handler.
+ */
+function nodepicker_migrate_form_submit($form, &$form_state) {
+  $values = $form_state['values'];
+  $batch = array(
+    'title' => t('Migrating'),
+    'operations' => array(),
+    'finished' => 'nodepicker_migrate_finished',
+  );
+
+  foreach ($values['types'] as $type) {
+    $batch['operations'][] = array('nodepicker_migrate_operation', array($type, $values['format']));
+  }
+
+  batch_set($batch);
+  batch_process();
+}
+
+/**
+ * Batch operation function.
+ */
+function nodepicker_migrate_operation($type, $format, &$context) {
+  $results = db_query("SELECT r.nid, r.vid, r.body FROM {node_revisions} r JOIN {node} n ON n.nid = r.nid AND n.vid = r.vid WHERE n.type = '%s'", $type);
+  while ($row = db_fetch_array($results)) {
+    $text = nodepicker_migrate_process($row['body'], $format);
+    $teaser = node_teaser($text);
+    $result = db_query("UPDATE {node_revisions} r SET r.body = '%s', r.teaser = '%s' WHERE r.nid = %d AND r.vid = %d", $text, $teaser, $row['nid'], $row['vid']);
+  }
+  $context['message'] = t('Migrated @type node type.', array('@type' => $type));
+}
+
+/**
+ * Process a piece of text.
+ */
+function nodepicker_migrate_process($subject, $format) {
+  $pattern = '/\[nodepicker==([^==]+)([^\]]+)\]/';
+  return preg_replace_callback($pattern, 'nodepicker_migrate_replace_' . $format, $subject);
+}
+
+/**
+ * Preg replace callback producing static links.
+ */
+function nodepicker_migrate_replace_static($matches) {
+  $url = $matches[1];
+  $meta = array_map('rawurldecode', explode('==', $matches[2]));
+  return l($meta[2], $url, array('attributes' => array('title' => $meta[1])));
+}
+
+/**
+ * Preg replace callback producing Pathologic links.
+ */
+function nodepicker_migrate_replace_pathologic($matches) {
+  $url = $matches[1];
+  $meta = array_map('rawurldecode', explode('==', $matches[2]));
+  return '<a href="internal:' . $url . '" title="' . $meta[1] . '">' . $meta[2] . '</a>';
+}
+
+
+/**
+ * Batch finished callback.
+ */
+function nodepicker_migrate_finished($success, $results, $operations) {
+  if ($success) {
+    $message = t('Finished processing.');
+  }
+  else {
+    $message = t('Finished with an error.');
+  }
+  drupal_set_message($message);
+}
